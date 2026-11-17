@@ -297,6 +297,20 @@ class LinkSession:
         from websockets.asyncio.client import connect
         from websockets.exceptions import InvalidStatus
 
+        # Muser 代理支持（移植加入）：proxy 值由 backend 的
+        # muser_proxy 统一决策后显式传入，禁止 websockets 自行读
+        # 环境变量造成双重行为。websockets 15 中 proxy=None 表示
+        # 禁用代理、强制直连，字符串为显式代理地址；False 不是
+        # 合法取值。模块不可用时传 None，保持确定性的直连行为。
+        proxy_arg = None
+        try:
+            from muser_proxy import load_proxy_config
+
+            proxy_arg = load_proxy_config().websockets_proxy_arg()
+        except Exception:
+            log.warning("proxy config unavailable; connecting directly")
+            proxy_arg = None
+
         try:
             return await connect(
                 self._url,
@@ -306,6 +320,7 @@ class LinkSession:
                 ping_interval=PING_INTERVAL_S,
                 ping_timeout=PING_INTERVAL_S,
                 max_size=128 * 1024,
+                proxy=proxy_arg,
             )
         except InvalidStatus as exc:
             status = exc.response.status_code

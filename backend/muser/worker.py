@@ -24,7 +24,14 @@ from .phone_setup import PhoneSetup
 from .diagnostics import Diagnostics
 
 DEFAULTS = dict(volume=70, idle_timeout=45, overall_timeout=300,
-                input_device=None, output_device=None, language="en")
+                input_device=None, output_device=None, language="en",
+                # 代理（移植加入，上游 1.0.0 无此功能）：由 backend 的
+                # muser_proxy 读取，字段与 Muse Gadget Zero 的配置
+                # 一致；proxy_mode 为 off 时与上游行为完全相同。
+                proxy_mode="off", proxy_host="", proxy_port=0,
+                proxy_username="", proxy_password="", no_proxy="")
+PROXY_KEYS = ("proxy_mode", "proxy_host", "proxy_port",
+              "proxy_username", "proxy_password", "no_proxy")
 
 
 def initialize_state():
@@ -517,9 +524,15 @@ class App:
 
     async def settings(self, update=None):
         if update:
+            proxy_before = tuple(self.prefs.get(k) for k in PROXY_KEYS)
             self.prefs.update(validate_prefs({**self.prefs, **update}))
             if not self.demo:
                 config.save_json("preferences.json", self.prefs)
+            if tuple(self.prefs.get(k) for k in PROXY_KEYS) != proxy_before:
+                self.log("proxy.changed", mode=self.prefs.get("proxy_mode"),
+                         host=self.prefs.get("proxy_host"),
+                         port=self.prefs.get("proxy_port"))
+                await self.connect(retry=True)
         devices = []
         if not self.demo:
             try:

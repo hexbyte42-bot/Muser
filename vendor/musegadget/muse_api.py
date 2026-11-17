@@ -28,6 +28,52 @@ from musegadget import __version__
 
 log = logging.getLogger(__name__)
 
+
+_PROXY_ENV_KEYS = ("http_proxy", "https_proxy", "HTTP_PROXY",
+                   "HTTPS_PROXY", "all_proxy", "ALL_PROXY")
+
+
+def _proxy_opener():
+    """Muser 代理支持（移植加入）：返回显式 opener，None 表示走 urllib 默认。
+
+    代理配置由 backend 的 muser_proxy 统一决策（环境变量 > Muser
+    偏好文件）：
+
+    * http 代理：显式 ProxyHandler opener；
+    * off 且环境无代理变量：None，与上游原行为一致（默认即直连）；
+    * off 但环境残留代理变量：显式无代理 opener，避免默认 urlopen
+      又把环境代理读回去；
+    * socks5：urllib 不支持 SOCKS，警告后显式直连；
+    * 模块不可用或配置不合法：None 并只记类别，绝不记凭据。
+    """
+    try:
+        from muser_proxy import direct_opener, load_proxy_config
+
+        config = load_proxy_config()
+        if config.is_off:
+            import os
+
+            if any(os.environ.get(key) for key in _PROXY_ENV_KEYS):
+                return direct_opener()
+            return None
+        try:
+            return config.urllib_opener()
+        except Exception:
+            log.warning("proxy mode unsupported for HTTPS API; connecting directly")
+            return direct_opener()
+    except Exception:
+        log.warning("proxy opener unavailable; using direct connection")
+        return None
+
+
+def _urlopen(request, timeout: float = 15):
+    """经代理感知的 opener 发请求；无 opener 时退回 urllib 默认行为。"""
+    opener = _proxy_opener()
+    if opener is None:
+        return urllib.request.urlopen(request, timeout=timeout)
+    return opener.open(request, timeout=timeout)
+
+
 API_BASE = "https://api.muse.ai"
 FETCH_PATH = "/fetch_vms"
 REFRESH_PATH = "/device_token/refresh"
@@ -71,7 +117,7 @@ def fetch_vms_with_status(
     req.add_header("X-API-Version", "1.0.0")
     req.add_header("User-Agent", user_agent())
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with _urlopen(req, timeout=15) as resp:
             status = resp.getcode()
             data = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
@@ -125,7 +171,7 @@ def _post_refresh(
     req.add_header("Authorization", auth_header)
     req.add_header("Content-Type", "application/json")
     req.add_header("User-Agent", user_agent())
-    with urllib.request.urlopen(req, timeout=15) as resp:
+    with _urlopen(req, timeout=15) as resp:
         data = json.loads(resp.read())
     if isinstance(data, dict) and isinstance(data.get("payload"), dict):
         data = data["payload"]

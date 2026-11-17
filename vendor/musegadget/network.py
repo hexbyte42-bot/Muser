@@ -28,8 +28,19 @@ CURRENT_CONNECTION_LABEL = "Use current connection"
 
 
 def is_online(timeout: float = 5.0) -> bool:
-    """True if the Muse API host accepts a TCP connection."""
+    """True if the Muse API host is reachable, honouring the proxy config.
+
+    Muser 代理支持（移植加入）：backend 的 muser_proxy 可用时，探测
+    经配置的代理进行（HTTP CONNECT 或 SOCKS5）；直连探测在必须走
+    代理的网络里永远失败。模块不可用时保持上游的直连 TCP 行为。
+    """
     host = API_BASE.split("://", 1)[-1].split("/", 1)[0]
+    try:
+        from muser_proxy import load_proxy_config
+
+        return load_proxy_config().probe(host, 443, timeout=timeout)
+    except Exception:
+        pass
     try:
         with socket.create_connection((host, 443), timeout=timeout):
             return True

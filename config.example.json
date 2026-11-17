@@ -4,5 +4,11 @@
   "idle_timeout": 45,
   "overall_timeout": 300,
   "input_device": null,
-  "output_device": null
+  "output_device": null,
+  "proxy_mode": "off",
+  "proxy_host": "",
+  "proxy_port": 0,
+  "proxy_username": "",
+  "proxy_password": "",
+  "no_proxy": ""
 }

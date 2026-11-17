@@ -57,10 +57,11 @@ class UI{
         *caption_=nullptr,*role_=nullptr,*scroll_=nullptr,*editor_=nullptr,*settings_rows_=nullptr,*modal_=nullptr;
     std::vector<uint16_t> pixels_=std::vector<uint16_t>(128*128);
     std::vector<Message> messages_;
-    json prefs_={{"volume",70},{"idle_timeout",45},{"overall_timeout",300},{"input_device",nullptr},{"output_device",nullptr},{"language","en"}};
+    json prefs_={{"volume",70},{"idle_timeout",45},{"overall_timeout",300},{"input_device",nullptr},{"output_device",nullptr},{"language","en"},
+        {"proxy_mode","off"},{"proxy_host",""},{"proxy_port",0},{"proxy_username",""},{"proxy_password",""},{"no_proxy",""}};
     json devices_=json::array();
     int history_=0,setting_=0;
-    std::string mode_="unpaired",status_="Starting",notice_,caption_id_,setup_url_,pair_name_,call_phase_="idle",previous_page_="home";
+    std::string mode_="unpaired",status_="Starting",notice_,caption_id_,setup_url_,pair_name_,call_phase_="idle",previous_page_="home",proxy_edit_key_;
     uint32_t setup_until_=0;
     float level_=0,mode_at_=0;
     bool call_=false,muted_=false,paired_=false;
@@ -78,6 +79,7 @@ class UI{
     std::string footer_text()const{
         if(page=="setup"||page=="pairing")return tr("Same Wi-Fi   Esc Cancel","同一局域网   Esc 取消");
         if(page=="compose")return tr("Enter Send   Esc Cancel   English input","Enter 发送   Esc 取消   英文输入");
+        if(page=="proxyedit")return tr("Enter Save   Esc Cancel","Enter 保存   Esc 取消");
         if(page=="settings")return tr("F/X Select   Z/C Change   S/D Vol   Esc Back","F/X 选择  Z/C 修改  S/D 音量  Esc 返回");
         if(page=="help")return tr("F/X Scroll   H/Esc Back","F/X 滚动   H/Esc 返回");
         if(page=="history")return tr("Z/C Message   F/X Page   Tab Home","Z/C 消息  F/X 翻页  Tab 返回");
@@ -149,6 +151,10 @@ class UI{
         s+=tr("In text input, letters are typed as text.","文字输入时，字母按普通文本输入。");
         return s;
     }
+    std::string proxy_mode_text()const{
+        auto m=prefs_.value("proxy_mode",std::string("off"));
+        return m=="http"?"HTTP":m=="socks5"?"SOCKS5":tr("Off","关闭");
+    }
     void refresh_settings(){
         if(page!="settings")return;
         auto name=[&](const char* k){
@@ -166,11 +172,14 @@ class UI{
             {tr("Call limit","通话上限"),prefs_["overall_timeout"].dump()+tr(" sec"," 秒")},
             {tr("Clear session","清空本次记录"),tr("Clear >","清空 >")},
             {tr("Reconnect","重新连接"),tr("Retry >","重试 >")},
-            {tr("Language","界面语言"),chinese()?"简体中文":"English"}};
+            {tr("Language","界面语言"),chinese()?"简体中文":"English"},
+            {tr("Proxy mode","代理模式"),proxy_mode_text()},
+            {tr("Proxy host","代理地址"),prefs_.value("proxy_host",std::string()).empty()?tr("Not set","未设置"):prefs_.value("proxy_host",std::string())},
+            {tr("Proxy port","代理端口"),prefs_.value("proxy_port",0)?std::to_string(prefs_.value("proxy_port",0)):tr("Not set","未设置")}};
         lv_obj_clean(settings_rows_);
-        auto section=setting_==0||setting_==8?tr("CONNECTION","连接"):setting_<5?tr("AUDIO","音频"):setting_<8?tr("CONVERSATION","会话"):tr("GENERAL","通用");
+        auto section=setting_==0||setting_==8||setting_>=10?tr("CONNECTION","连接"):setting_<5?tr("AUDIO","音频"):setting_<8?tr("CONVERSATION","会话"):tr("GENERAL","通用");
         label(settings_rows_,chinese()?font_:&lv_font_montserrat_10,10,0,250,section.c_str(),DIM);
-        int first=std::clamp(setting_-2,0,5);
+        int first=std::clamp(setting_-2,0,8);
         for(int slot=0;slot<5;++slot){
             int i=first+slot;bool active=i==setting_;
             auto row=plain(settings_rows_,8,17+slot*22,304,21,active?0x142d46:BG);
@@ -188,6 +197,12 @@ class UI{
         if(setting_==3)values["volume"]=std::clamp(prefs_["volume"].get<int>()+direction*5,0,100);
         else if(setting_==9)values["language"]=chinese()?"en":"zh-CN";
         else if(setting_==4){muted_=!muted_;bridge_.send({{"command","mic.mute"},{"muted",muted_}});}
+        else if(setting_==10){
+            static const char* modes[3]={"off","http","socks5"};
+            std::string cur=prefs_.value("proxy_mode",std::string("off"));
+            int n=cur=="http"?1:cur=="socks5"?2:0;
+            values["proxy_mode"]=modes[(n+direction+3)%3];
+        }
         else if(setting_==5||setting_==6){
             const char* k=setting_==5?"idle_timeout":"overall_timeout";
             values[k]=std::clamp(prefs_[k].get<int>()+direction*(setting_==5?15:60),setting_==5?15:60,setting_==5?3600:7200);
@@ -204,6 +219,26 @@ class UI{
             if(call_&&(setting_==1||setting_==2))toast(tr("Audio device changes apply next call","音频设备将在下次通话生效"));
         }
         refresh_settings();
+    }
+    void confirm_proxy_edit(){
+        std::string value=lv_textarea_get_text(editor_);
+        auto b=value.find_first_not_of(" \t"),e=value.find_last_not_of(" \t");
+        value=b==std::string::npos?"":value.substr(b,e-b+1);
+        json values=json::object();
+        if(proxy_edit_key_=="proxy_port"){
+            if(!value.empty()){
+                if(value.find_first_not_of("0123456789")!=std::string::npos){toast(tr("Port must be a number","端口必须是数字"));return;}
+                int port=std::stoi(value);
+                if(port<0||port>65535){toast(tr("Port out of range","端口超出范围"));return;}
+                values["proxy_port"]=port;
+            }else values["proxy_port"]=0;
+        }else{
+            if(value.find_first_of(" \t")!=std::string::npos){toast(tr("Host must not contain spaces","地址不能包含空格"));return;}
+            values["proxy_host"]=value;
+        }
+        prefs_.update(values);bridge_.send({{"command","settings"},{"values",values}});
+        show("settings");
+        toast(tr("Proxy saved; reconnecting","代理已保存，正在重新连接"));
     }
 public:
     std::string page="home";
@@ -265,6 +300,17 @@ public:
             lv_obj_set_style_bg_color(editor_,color(0x151c25),0);lv_obj_set_style_border_width(editor_,1,0);
             lv_obj_set_style_border_color(editor_,color(0x57496a),0);lv_obj_set_style_radius(editor_,3,0);
             lv_textarea_set_max_length(editor_,1024);lv_textarea_set_placeholder_text(editor_,"Type a message...");
+            lv_obj_add_state(editor_,LV_STATE_FOCUSED);
+        }else if(page=="proxyedit"){
+            bool host=proxy_edit_key_=="proxy_host";
+            label(body_,font_,8,3,304,(host?tr("Proxy host (IP or hostname)","代理地址（IP 或主机名）"):tr("Proxy port (0-65535)","代理端口（0 - 65535）")).c_str(),DIM);
+            editor_=lv_textarea_create(body_);lv_obj_set_pos(editor_,8,27);lv_obj_set_size(editor_,304,92);
+            lv_obj_set_style_text_font(editor_,font_,0);lv_obj_set_style_text_color(editor_,color(TEXT),0);
+            lv_obj_set_style_bg_color(editor_,color(0x151c25),0);lv_obj_set_style_border_width(editor_,1,0);
+            lv_obj_set_style_border_color(editor_,color(0x57496a),0);lv_obj_set_style_radius(editor_,3,0);
+            lv_textarea_set_max_length(editor_,host?253:5);
+            lv_textarea_set_placeholder_text(editor_,host?"192.168.1.1":"8089");
+            lv_textarea_set_text(editor_,host?prefs_.value("proxy_host",std::string()).c_str():std::to_string(prefs_.value("proxy_port",0)).c_str());
             lv_obj_add_state(editor_,LV_STATE_FOCUSED);
         }else{
             settings_rows_=plain(body_,0,0,320,128);
@@ -330,7 +376,7 @@ public:
         }
     }
     void text(const std::string& value){
-        if(page!="compose"||!editor_)return;
+        if((page!="compose"&&page!="proxyedit")||!editor_)return;
         std::string ascii;for(unsigned char c:value)if(c>=32&&c<127)ascii+=char(c);
         lv_textarea_add_text(editor_,ascii.c_str());
     }
@@ -340,6 +386,7 @@ public:
             else if(esc_down_){esc_down_=false;if(ticks()-esc_at_<700){
                 if(modal_){lv_obj_delete(modal_);modal_=nullptr;}
                 else if(page=="setup"||page=="pairing"){bridge_.send({{"command","pair.cancel"}});show("settings");}
+                else if(page=="proxyedit")show("settings");
                 else if(page=="help")show(previous_page_);
                 else if(page!="home")show("home");else if(call_)bridge_.send({{"command","call.stop"}});
                 else toast(tr("Hold Esc to exit Muser","长按 Esc 退出 Muser"));
@@ -348,6 +395,15 @@ public:
         if(!e.down)return;
         if(modal_){if(e.key==K_ENTER){lv_obj_delete(modal_);modal_=nullptr;}return;}
         if(page=="setup"||page=="pairing")return;
+        if(page=="proxyedit"){
+            if(e.key==K_ENTER)confirm_proxy_edit();
+            else if(e.key==K_BACKSPACE)lv_textarea_delete_char(editor_);
+            else if(e.key==K_LEFT)lv_textarea_cursor_left(editor_);
+            else if(e.key==K_RIGHT)lv_textarea_cursor_right(editor_);
+            else if(e.key==K_DELETE)lv_textarea_delete_char_forward(editor_);
+            else text(e.text);
+            return;
+        }
         if(page=="compose"){
             if(e.key==K_ENTER){std::string value=lv_textarea_get_text(editor_);if(!value.empty()){
                 bridge_.send({{"command","chat.send"},{"text",value}});show("home");}}
@@ -362,7 +418,7 @@ public:
         switch(routed){case 'f':case 'F':routed=K_UP;break;case 'x':case 'X':routed=K_DOWN;break;case 'z':case 'Z':routed=K_LEFT;break;case 'c':case 'C':routed=K_RIGHT;break;default:break;}
         if(routed==K_UP||routed==K_DOWN){
             int dir=routed==K_UP?-1:1;
-            if(page=="settings"){setting_=(setting_+dir+10)%10;refresh_settings();}
+            if(page=="settings"){setting_=(setting_+dir+13)%13;refresh_settings();}
             else if(scroll_){
                 follow_latest_=false;lv_obj_update_layout(scroll_);
                 int step=std::max(24,lv_obj_get_height(scroll_)-18);
@@ -381,6 +437,8 @@ public:
                 if(setting_==0)bridge_.send({{"command","pair"}});
                 else if(setting_==7)bridge_.send({{"command","clear"}});
                 else if(setting_==8)bridge_.send({{"command","connect"}});
+                else if(setting_==11){proxy_edit_key_="proxy_host";show("proxyedit");}
+                else if(setting_==12){proxy_edit_key_="proxy_port";show("proxyedit");}
                 else adjust_setting(1);
             }else if(k=='h'){previous_page_="settings";show("help");}
             else if(k=='s'||k=='d')change_volume(k=='d'?5:-5);
@@ -407,7 +465,7 @@ public:
     void frame(){
         if(esc_down_&&ticks()-esc_at_>=700)running=false;
         if(page!="history"){
-            std::string title=page=="settings"?tr("Settings  ","设置  ")+std::to_string(setting_+1)+"/10":page=="help"?tr("Muser | Help","Muser · 帮助"):page=="compose"?tr("Muser | Text chat","Muser · 文字聊天"):page=="setup"?tr("Muser | Phone setup","Muser · 手机设置"):page=="pairing"?tr("Muser | Pair phone","Muser · 蓝牙配对"):"Muser";
+            std::string title=page=="settings"?tr("Settings  ","设置  ")+std::to_string(setting_+1)+"/13":page=="proxyedit"?tr("Muser | Proxy","Muser · 代理设置"):page=="help"?tr("Muser | Help","Muser · 帮助"):page=="compose"?tr("Muser | Text chat","Muser · 文字聊天"):page=="setup"?tr("Muser | Phone setup","Muser · 手机设置"):page=="pairing"?tr("Muser | Pair phone","Muser · 蓝牙配对"):"Muser";
             if(page=="home")title+=tr(" | ","  · ")+(mode_=="unpaired"?tr("Not paired","未配对"):mode_=="offline"?tr("Paired / retrying","已配对 / 重试中"):mode_=="connecting"?tr("Connecting Muse","连接 Muse 中"):mode_=="speaking"?tr("Speaking","说话中"):mode_=="listening"?tr("Listening","聆听中"):mode_=="thinking"?tr("Thinking","思考中"):mode_=="error"?tr("Error","连接异常"):tr("Ready","就绪"));
             if(page=="home"&&call_phase_=="starting")title=tr("Muser | Starting voice","Muser · 正在开启语音");
             if(page=="home"&&call_phase_=="stopping")title=tr("Muser | Ending voice","Muser · 正在结束语音");
